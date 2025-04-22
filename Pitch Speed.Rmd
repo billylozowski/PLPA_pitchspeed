@@ -1,0 +1,372 @@
+---
+title: "Predicting Pitched Ball Velocity in Baseball"
+author: "Billy Lozowski"
+date: '`r Sys.Date()`'
+output: 
+  html_document:
+    toc: true
+  md_document:
+      variant: gfm
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+[Installing Java](https://www.java.com/en/download/)
+
+First, we'll load the packages required for our analysis.
+
++ *If the packages aren't already installed, run the following code:
+
+install.packages("tidyverse")
+
+install.packages("tictoc")
+
+Sys.setenv(JAVA_HOME = "C:/Program Files/Java/jdk-<version>")
+install.packages("rJava")
+
+install.packages("glmulti")
+
+install.packages("party")
+
+devtools::install_github("dustinfife/flexplot")*
+
+devtools::install_github("strengejacke/strengejacke")
+
+install.packages("sjPlot")
+
+```{r packages, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(rJava)
+library(glmulti)
+library(party)
+library(flexplot)
+library(tictoc)
+library(flextable)
+library(sjPlot)
+library(performance)
+```
+
+We'll then load our data "Pitch Speed.csv"
+
+```{r data}
+ball.speed <- read.csv("Pitch Speed.csv", header = TRUE)
+```
+
+We're going to subset the data to include only the variables we're interested in
+
+```{r filter data}
+# subset data
+ball.speed.subset <- ball.speed %>%
+  filter(Pitch.Type == "Fastball") %>%
+  # select only columns with data we're interested in
+  select(RelSpeed..m.s., 24:ncol(ball.speed))
+```
+
+Now we'll 'clean' the data. First, we'll plot each variable, then we'll see if we need to remove any potential outliers. To do this, we'll first pivot the data to a long format.
+
+```{r data cleaning}
+# pivot the data frame
+ball.speed.subset.long <- ball.speed.subset %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "values") 
+
+# plot the data
+ggplot(ball.speed.subset.long, aes(variable, values)) +
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_blank())
+```
+
+Plotting the data doesn't really help us with values on the lower end because of some extreme values for one particular variable )"max trunk rotation acceleration". As such, we'll remove this variable and re-plot the data.
+
+```{r replotting the data}
+options(scipen = 999) # prevent scientific number output
+
+# calculate column means to see which variable is the extreme one
+column.means <- as.data.frame(colMeans(ball.speed.subset))  
+
+# remove "max trunk rotation acceleration"
+ball.speed.subset <- ball.speed.subset %>%
+  select(-Max.Trunk.Rotation.Acceleration..deg.s.2.)
+
+
+# pivot the data frame
+ball.speed.subset.long <- ball.speed.subset %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "values") 
+
+# plot the data
+ggplot(ball.speed.subset.long, aes(variable, values)) +
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_blank())
+```
+
+This is a bit better, but it's still not very clear. Given the scale of difference in variable values, it doesn't seem appropriate to keep removing the highest values. So, instead, since outliers do seem to be present in the data, we'll go ahead and remove these.
+
+```{r outlier removal}
+# loop over each numeric column in a data frame
+remove_outliers <- function(data) {
+  data[] <- lapply(data, function(column) {
+    if (is.numeric(column)) {
+      
+      # calculate Q1, Q3, and IQR
+      Q1 <- quantile(column, 0.25, na.rm = TRUE)
+      Q3 <- quantile(column, 0.75, na.rm = TRUE)
+      IQR_val <- Q3 - Q1
+      
+      # set thresholds for outliers
+      lower_limit <- Q1 - 2 * IQR_val
+      upper_limit <- Q3 + 2 * IQR_val
+      
+      # replace outliers with NA (or you can choose to filter them out)
+      column[column < lower_limit | column > upper_limit] <- NA
+    }
+    return(column)
+  })
+  return(data)
+}
+
+# apply the function to your data frame
+ball.speed.clean <- remove_outliers(ball.speed.subset)
+
+# pivot the cleaned data frame
+ball.speed.clean.long <- ball.speed.clean %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "values") 
+
+# plot the cleaned data
+ggplot(ball.speed.clean.long, aes(variable, values)) +
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_blank())
+```
+
+Since we've removed outliers, we'll need to account for this so our random forest model can run properly. 
+
+```{r filter outliers}
+# filter the missing values from the data set
+ball.speed.filtered <- ball.speed.clean %>%
+  filter(!if_any(everything(), is.na))
+```
+
+Now we're going to construct the  random forest (rf) model for ball speed. 
+
+```{r random forest model}
+# construct the rf model
+rf.ball.speed <- cforest(RelSpeed..m.s. ~ ., data = ball.speed.filtered)
+```
+
+To determine which variables we want to keep in our model later on, we'll use "variable importance" as a guide!
+
+[Mahieu, Qannari & Jaillais (2023)](https://www.sciencedirect.com/science/article/abs/pii/S0169743923002368)
+
+
+```{r extract random forest estimates}
+# extract the estimates for rf.ball.speed
+estimates.ball.speed <- estimates(rf.ball.speed)
+
+# create a data frame with variables and their importance in
+variable.importance <- as.data.frame(estimates.ball.speed[["importance"]])
+
+# add a new column for the variable name and re-order the columns
+variable.importance <- variable.importance %>%
+  rownames_to_column(var = "Variable") %>%
+  select(Variable, everything())
+
+# rename the importance column
+colnames(variable.importance)[2] <- "Importance (V.I.)"
+
+# ensure variables are arranged by their importance (highest to lowest)
+variable.importance <- variable.importance %>%
+  arrange(desc(`Importance (V.I.)`))%>%
+  mutate(Variable = factor(Variable, levels = Variable))
+```
+
+Since the variables are arranged in order of their importance, we'll visualise this to see if there are any clear cut-offs (i.e. variables we should vs. variables we maybe shouldn't include).
+
+```{r plot estimates}
+ggplot(variable.importance, aes(Variable, `Importance (V.I.)`, fill = `Importance (V.I.)`)) +
+geom_bar(stat = "identity") +
+  theme_bw() +
+  labs(x = NULL,
+       y = "Variable Importance") +
+  theme(axis.text.x = element_blank(),
+        x.ticks = NULL)
+```
+
+From this first plot, It seems as if there might be a cut-off in terms of our variable importance. Let's zoom in and see if we can get a better idea how many variables this includes.
+
+```{r subset 1}
+# subset the data
+subset1 <- subset(variable.importance, `Importance (V.I.)` >= 0.15)
+
+# plot the subset data
+ggplot(subset1, aes(Variable, `Importance (V.I.)`, fill = `Importance (V.I.)`)) +
+geom_bar(stat = "identity") +
+  theme_classic() +
+  labs(x = NULL,
+       y = "Variable Importance") +
+  theme(axis.text.x = element_blank(),
+        x.ticks = NULL)
+```
+
+Four variables are clearly out ahead on their own. As such, we'll subset the data again to include those 4 (i.e. V.I. values >= 0.2), and move onto our 'glmulti' analysis.
+
+```{r subset 2}
+# subset the data
+subset2 <- subset1 %>%
+  filter(`Importance (V.I.)` >= 0.2)
+
+# return the variable names
+subset2$Variable 
+```
+
+Our 4 variables are:
+
+[1] Step.Width..m.                     
+[2] Lead.Ankle.Flexion.at.FC..deg.     
+[3] Center.of.Mass.A.P.at.FC.Zeroed..m.
+[4] Stride.Orientation 
+
+We'll output a general summary of how many regression models we'll assess.
+
+```{r summary of models}
+glmulti(RelSpeed..m.s. ~ 
+          Step.Width..m. +
+          Lead.Ankle.Flexion.at.FC..deg. +
+          Center.of.Mass.A.P.at.FC.Zeroed..m. +
+          Stride.Orientation,
+        data = ball.speed.filtered,
+        crit = bic,          # model fit criterion
+        level = 1,           # 1 without interactions, 2 with interactions
+        method = "d",        # simple summary of candidates
+                             # other options include "g" or "h"
+        family = gaussian,
+        fitfunction = glm,   # specify the model type (lm or glm)
+        confsetsize = 100)   # keep the 100 best models (confidence set)
+```
+
+We'll now build some models to see whether we can remove any of these using a the "glmulti" packagen and an exhaustive algorithm. It's advised to refer to the documentation to ensure the correct/desired model parameters are set if you have more predictor variables.
+
+```{r model with exhaustive algorithm, message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+tic()
+g.model <- glmulti(RelSpeed..m.s. ~ 
+                     Step.Width..m. +
+                     Lead.Ankle.Flexion.at.FC..deg. +
+                     Center.of.Mass.A.P.at.FC.Zeroed..m. +
+                     Stride.Orientation,
+                  data = ball.speed.filtered,
+                  crit = bic,          # model fit criterion
+                  level = 2,           # 1 without interactions, 2 with interactions
+                  method = "h",        # exhaustive screening algorithm (better with fewer predictors)
+                  family = gaussian,
+                  fitfunction = glm,   # specify the model type (lm or glm)
+                  confsetsize = 100)   # keep the 100 best models (confidence set)
+toc()
+```
+
+Extract model information
+
+```{r model information}
+# model results
+print(g.model)
+
+# plot the best 100 models base on information criterion (IC)
+plot(g.model) # red line indicates 2 IC units from the best model
+```
+
+See which variables the best models contain (in this case, the best 4 models).
+
+```{r model variables, weights, and ICs}
+weightable(g.model)[1:6,] %>% # select the best 6 models
+  regulartable() %>%
+  autofit()
+```
+
+We're going to save the model importance terms as a PNG file so we can see which variables are included in 80+% of models.
+
+```{r variable importance across models}
+# adjust the plot margins
+par(mar = c(5, 25, 1, 2) + 0.1)
+
+# plot the model so it shoes in the plot viewer
+plot(g.model, type = "s")
+
+################################################################################
+
+# open a PNG device with specified width and height
+png(filename = "Model Importance Terms.png", width = 1800, height = 1200, res = 150)
+
+# set up the layout to include extra space for the y-axis labels
+layout(matrix(1), widths = c(1.5), heights = c(1))
+
+# adjust the plot margins
+par(mar = c(5, 25, 1, 2) + 0.1)
+
+# plot the model
+plot(g.model, type = "s")
+
+# close the PNG device
+dev.off()
+```
+
+So, it looks like __[1] Lead.Ankle.Flexion.at.FC..deg.__ and its interaction with COM position in the AP ( __[1] Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg.__ ) might be most important when it comes to biomechanics explaining pitched ball velocity! Interestingly, they're both included in the model with the highest weighting and the second strongest model. However, this second model exclusively has these two terms. This may suggest that the second strongest model may be most appropriate when trying to explain pitched ball velocity. 
+
+```{r first versus second strongest models}
+first.model <- lm(RelSpeed..m.s. ~
+                    # predictors
+                    Lead.Ankle.Flexion.at.FC..deg. + 
+                    Lead.Ankle.Flexion.at.FC..deg. +
+                    # interactions
+                    Lead.Ankle.Flexion.at.FC..deg.:Step.Width..m. +
+                    Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg. +
+                    Stride.Orientation:Lead.Ankle.Flexion.at.FC..deg.,
+                  data = ball.speed.filtered)
+
+# summarise the final model
+summary(first.model)
+
+second.model <- lm(RelSpeed..m.s. ~
+                    # predictors
+                    Lead.Ankle.Flexion.at.FC..deg. +
+                    # interactions
+                    Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg.,
+                    data = ball.speed.filtered)
+# summarise the final model
+summary(second.model)
+
+# create a table of the final model outputs, and save as a word .doc
+tab_model(first.model, second.model, 
+          show.df = TRUE,
+          show.se = TRUE, 
+          string.se = "SE",
+          dv.labels = c("Strongest Model", "Second Strongest Model"),
+          file = "Pitch Ball Velocity Models.doc")
+```
+
+Our strongest model accounted for ~24% of the variance in pitched ball velocity, and our second strongest model accounted for ~21%. Since these values are so close, let's run a quick model comparison between the top two to make sure we pick the right one!
+
+```{r model comparison}
+# model comparison
+model_performance(first.model)
+model_performance(second.model)
+
+# compare models with performance package
+compare_performance(first.model, second.model, rank = T)
+
+# compare models with flexplot package
+model.comparison(first.model, second.model)
+
+# # visualise model fit indices
+# plot(compare_performance(first.model, second.model))
+```
+
+Model fit criteria are almost identical for both models. While the AIC and BIC are lower for the model with more terms included, the Bayes Factor suggests that the difference between them is negligible. Given that our model-averaged variable importance plot showed that __Lead.Ankle.Flexion.at.FC..deg.__ and __Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg.__ were by far the most common model terms across all computed models, we will select the model that includes just these (model 2). With ~21% of explained variance in pitched ball speed, it seems that other variables other than the ones identified here are likely to better explain pitched ball velocity in baseball.
