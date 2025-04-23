@@ -56,9 +56,7 @@ This will then be used to run our random forest model.
 rf.ball.speed <- cforest(RelSpeed..m.s. ~ ., data = ball.speed.filtered)
 ```
 
-Once we have our random forest model, we can select the variables which have the highest 'Variable Importance' values. For this analysis, values above 0.2 were selected, but this threshold can be set at the user's discression.
-
-+ sometimes 4 variables exhibit V.I. values > 0.2, but other times 5 do. If this is the case, ensure that the correct variables are included in the following portions of the analysis!
+Once we have our random forest model, we can select the variables which have the highest 'Variable Importance' values. For this analysis, values above 0.2 were selected, but this threshold can be set at the user's discretion.
 
 ```
 subset2 <- subset1 %>%
@@ -68,11 +66,11 @@ subset2 <- subset1 %>%
 We can now run the multiple regression configurations using the "glmulti" package. This computes every conceivable regression model, and returns a number based on model fit criteria.
 
 ```
-g.model <- glmulti(RelSpeed..m.s. ~ 
-                     Step.Width..m. +
+h.model <- glmulti(RelSpeed..m.s. ~ 
                      Lead.Ankle.Flexion.at.FC..deg. +
+                     Step.Width..m. +
                      Center.of.Mass.A.P.at.FC.Zeroed..m. +
-                     Stride.Orientation,
+                     Max.Lead.Hip.Flexion.Velocity..deg.s.,
                   data = ball.speed.filtered,
                   crit = bic,          # model fit criterion
                   level = 2,           # 1 without interactions, 2 with interactions
@@ -85,7 +83,7 @@ g.model <- glmulti(RelSpeed..m.s. ~
 We then visualise these models (in this instance we should have 6), and see which variables are most suitable for our final model.
 
 ```
-weightable(g.model)[1:6,] %>% # select the best 6 models
+weightable(h.model)[1:6,] %>% # select the best 6 models
   regulartable() %>%
   autofit()
 
@@ -98,11 +96,10 @@ Based on our output from "glmulti", we have two potential models we can use. So,
 first.model <- lm(RelSpeed..m.s. ~
                     # predictors
                     Lead.Ankle.Flexion.at.FC..deg. + 
-                    Lead.Ankle.Flexion.at.FC..deg. +
+                    Step.Width..m. +
+                    Max.Lead.Hip.Flexion.Velocity..deg.s. +
                     # interactions
-                    Lead.Ankle.Flexion.at.FC..deg.:Step.Width..m. +
-                    Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg. +
-                    Stride.Orientation:Lead.Ankle.Flexion.at.FC..deg.,
+                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
                   data = ball.speed.filtered)
 
 # summarise the final model
@@ -111,8 +108,9 @@ summary(first.model)
 second.model <- lm(RelSpeed..m.s. ~
                     # predictors
                     Lead.Ankle.Flexion.at.FC..deg. +
+                    Step.Width..m. +
                     # interactions
-                    Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg.,
+                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
                     data = ball.speed.filtered)
 # summarise the final model
 summary(second.model)
