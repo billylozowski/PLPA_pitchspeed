@@ -1,11 +1,11 @@
 # Predicting Pitched Ball Velocity in Baseball
 
-This project aims to determine which biomechanical factors relate to pitched fastball velocity in baseball. 
+This project aims to determine whether biomechanical factors relate to pitched fastball velocity in baseball. 
 In-game biomechanical data collected with Kinatrax and ball data collected with Trackman at Plainsman Park will be used and subjected to two main analyses.
 
 All data is stored within the folder "Final Project/PLPA_pitchspeed", and can be accessed by downloading the current repository.
 
-Once the data and relevant packages are loaded, it will be filtered to ensure only the specific trials we're interested in are retained.
+Data will be filtered, cleaned, and analysed to ensure only the specific trials we're interested in are retained.
 
 ```
 # subset data
@@ -39,7 +39,7 @@ remove_outliers <- function(data) {
   return(data)
 }
 
-# apply the function to your data frame
+# apply the function to the data frame
 ball.speed.clean <- remove_outliers(ball.speed.subset)
 ```
 
@@ -74,7 +74,7 @@ h.model <- glmulti(RelSpeed..m.s. ~
                   data = ball.speed.filtered,
                   crit = bic,          # model fit criterion
                   level = 2,           # 1 without interactions, 2 with interactions
-                  method = "h",        # exhaustive screening algorithm (better with fewer predictors)
+                  method = "g",        # genetic screening algorithm (better with fewer predictors)
                   family = gaussian,
                   fitfunction = glm,   # specify the model type (lm or glm)
                   confsetsize = 100)   # keep the 100 best models (confidence set)
@@ -83,59 +83,35 @@ h.model <- glmulti(RelSpeed..m.s. ~
 We then visualise these models (in this instance we should have 6), and see which variables are most suitable for our final model.
 
 ```
-weightable(h.model)[1:6,] %>% # select the best 6 models
+plot(g.model, type = "s")
+
+weightable(h.model)[1:3,] %>% # select the best 3 models
   regulartable() %>%
   autofit()
-
-plot(g.model, type = "s")
 ```
 
-Based on our output from "glmulti", we have two potential models we can use. So, we'll compare these on information criterion, and the visuals created above.
+Based on our output from "glmulti", we have one model that includes the most common parameters, and only those. To finsih, we'll summarise this model.
 
 ```
-first.model <- lm(RelSpeed..m.s. ~
-                    # predictors
-                    Lead.Ankle.Flexion.at.FC..deg. + 
-                    Step.Width..m. +
-                    Max.Lead.Hip.Flexion.Velocity..deg.s. +
-                    # interactions
-                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
-                  data = ball.speed.filtered)
+fmodel.one <- lm(RelSpeed..m.s. ~
+                  # predictors
+                  Lead.Ankle.Flexion.at.FC..deg. + 
+                  # interactions
+                  Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg. +
+                  Max.Lead.Hip.Flexion.Velocity..deg.s.:Step.Width..m.,
+                data = ball.speed.filtered)
 
 # summarise the final model
-summary(first.model)
-
-second.model <- lm(RelSpeed..m.s. ~
-                    # predictors
-                    Lead.Ankle.Flexion.at.FC..deg. +
-                    Step.Width..m. +
-                    # interactions
-                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
-                    data = ball.speed.filtered)
-# summarise the final model
-summary(second.model)
+summary(model.one)
+model_performance(model.one)
 
 # create a table of the final model outputs, and save as a word .doc
-tab_model(first.model, second.model, 
+tab_model(model.one, 
           show.df = TRUE,
           show.se = TRUE, 
           string.se = "SE",
-          dv.labels = c("Strongest Model", "Second Strongest Model"),
+          dv.labels = c("Model 1"),
           file = "Pitch Ball Velocity Models.doc")
 ```
 
-To be sure we select the most appropriate model, we'll run a model comparison. 
-
-```
-model_performance(first.model)
-model_performance(second.model)
-
-# compare models with performance package
-compare_performance(first.model, second.model, rank = T)
-
-# compare models with flexplot package
-model.comparison(first.model, second.model)
-```
-
-Based on all of this information, the second strongest model (second.model) appears to be the most appropriate. It contains the fewest terms and is comparable in terms of fit to a more complex model. Though it does account for less variance in our outcome, the Bayes Factor shows that both this and the strongest weighted model are almost the same. Therefore, we'll choose the simple model to proceed.
-Now we can use this going forward.
+Based on all of this information, our highest weighted model (model.one) appears to be the most appropriate. It contains the fewest terms and is the simplest. Now we can use this going forward, and run any additional tests using this framework.
