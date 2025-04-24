@@ -3,23 +3,29 @@ title: "Predicting Pitched Ball Velocity in Baseball"
 author: "Billy Lozowski"
 date: '`r Sys.Date()`'
 output: 
-  pdf_document:
+  html_document:
     toc: true
   md_document:
       variant: gfm
-  html_document:
+  pdf_document:
     toc: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-
-set.seed(123) # ensure all randomly generated data is repeatable
 ```
 
-[Installing Java](https://www.java.com/en/download/)
+```{r}
+set.seed(1618) # ensure all randomly generated data is repeatable
+# as a side joke, this seed is the year in which the 'second defenestration of Prague' occurred
+```
 
-First, we'll load the packages required for our analysis.
+[_How to install Java_](https://www.java.com/en/download/)
+
+## Load Packages
+
+Before we do anything, we need load the packages required for our analysis.
+
 ```{r include=FALSE} 
 # + If the packages aren't already installed, run the following code:
 # 
@@ -53,13 +59,17 @@ library(sjPlot)
 library(performance)
 ```
 
-We'll then load our data "Pitch Speed.csv"
+## Load Data
+
+We'll load our data "Pitch Speed.csv" and create the object "ball.speed".
 
 ```{r data}
 ball.speed <- read.csv("Pitch Speed.csv", header = TRUE)
 ```
 
-We're going to subset the data to include only the variables we're interested in, We'll visualise this, then we'll clean it to remove any potential outliers.
+## Filtering Fastball-Only Data
+
+We're going to subset the data to include only 'fastball' pitches, and the variables we're interested in in relation to this pitch type. 
 
 ```{r filter data}
 # subset data
@@ -68,6 +78,10 @@ ball.speed.subset <- ball.speed %>%
   # select only columns with data we're interested in
   select(RelSpeed..m.s., 24:ncol(ball.speed))
 ```
+
+## Visualise Data (1)
+
+Before we clean the data, we'll visualise it to get an idea of where any potential outliers might be.
 
 ```{r data cleaning, echo=FALSE}
 # pivot the data frame
@@ -83,7 +97,9 @@ ggplot(ball.speed.subset.long, aes(variable, values)) +
   theme(axis.text.x = element_blank())
 ```
 
-Plotting the data doesn't really help us with values on the lower end because of some extreme values for one particular variable "max trunk rotation acceleration". As such, we'll remove this variable and re-plot the data.
+## Visualise Data (2)
+
+Our first plot doesn't really help us with values on the lower end because of some extreme values. This is mainly due to one particular variable "max trunk rotation acceleration", so we'll remove this variable and re-plot the data.
 
 ```{r replotting the data, echo=FALSE}
 options(scipen = 999) # prevent scientific number output
@@ -134,10 +150,14 @@ remove_outliers <- function(data) {
 }
 ```
 
+## Remove Outliers
+
 ```{r}
 # apply the function to your data frame
 ball.speed.clean <- remove_outliers(ball.speed.subset)
 ```
+
+## Remove "NA" values
 
 Since we've removed outliers, we'll need to account for this so our random forest model can run properly. We'll ensure no "NA" values are included in our model.
 
@@ -147,22 +167,19 @@ ball.speed.filtered <- ball.speed.clean %>%
   filter(!if_any(everything(), is.na))
 ```
 
-We can now construct the random forest (rf) model for pitch speed. 
+## Random Forest Model
 
-```{r random forest model, include=FALSE}
+To determine which variables we want to keep in our model later on, we can now construct the random forest (rf) model for pitch speed. We'll use "variable importance" [(Mahieu et al., 2023)](https://www.sciencedirect.com/science/article/abs/pii/S0169743923002368) to make our decisions!
+
+```{r random forest model}
 # construct the rf model
 rf.ball.speed <- cforest(RelSpeed..m.s. ~ ., data = ball.speed.filtered)
-```
 
-To determine which variables we want to keep in our model later on, we'll use "variable importance" as a guide!
-
-[__Mahieu, Qannari & Jaillais (2023)__](https://www.sciencedirect.com/science/article/abs/pii/S0169743923002368)
-
-
-```{r extract random forest estimates, echo=FALSE}
 # extract the estimates for rf.ball.speed
 estimates.ball.speed <- estimates(rf.ball.speed)
+```
 
+```{r extract random forest estimates, echo=FALSE}
 # create a data frame with variables and their importance in
 variable.importance <- as.data.frame(estimates.ball.speed[["importance"]])
 
@@ -178,7 +195,11 @@ colnames(variable.importance)[2] <- "Importance (V.I.)"
 variable.importance <- variable.importance %>%
   arrange(desc(`Importance (V.I.)`))%>%
   mutate(Variable = factor(Variable, levels = Variable))
+
+head(variable.importance, 10)
 ```
+
+## Plot Variable Importance (1)
 
 Since the variables are arranged in order of their importance, we'll visualise this to see if there are any clear cut-offs (i.e. variables we should vs. variables we maybe shouldn't include).
 
@@ -193,6 +214,8 @@ geom_bar(stat = "identity") +
 ```
 
 From this first plot, it seems as if there might be a cut-off in terms of our variable importance. Let's zoom in and see if we can get a better idea how many variables this includes.
+
+## Plot Variable Importance (2)
 
 ```{r subset 1, echo=FALSE}
 # subset the data
@@ -214,26 +237,30 @@ subset2 <- subset1 %>%
   filter(`Importance (V.I.)` >= 0.2)
 
 # return the variable names
-subset2$Variable 
+variable.names <- subset2$Variable 
 ```
 
-Four variables seem to be clearly out ahead on their own. As such, we'll subset the data again to include those 4 (i.e. V.I. values >= 0.2), and move onto our 'glmulti' analysis.
+## Automated Model Selection and Model-Averaging - Summary
 
-Our 4 variables are:
+When deciding which variables to include in the next portion of our analysis, we're going to set a V.I. threshold of >= 0.2. Though this cut-off is arbitrary (it's not based on any literature), 0.2 looks like it might be suitable. 
 
-[1] Lead.Ankle.Flexion.at.FC..deg.       
-[2] Step.Width..m.                       
-[3] Center.of.Mass.A.P.at.FC.Zeroed..m.  
-[4] Max.Lead.Hip.Flexion.Velocity..deg.s.
+Six variables (below) have a V.I. of more than 0.2. As such, we'll subset the data again to include just these (i.e. V.I. values >= 0.2), and move onto our automated model selection and model-averaging analysis using the __'glmulti'__ package.
+
+  1. Lead.Ankle.Flexion.at.FC..deg.    
+  2. Stride.Orientation
+  3. Step.Width..m.
+  4. Center.of.Mass.A.P.at.FC.Zeroed..m.
+  5. Max.Lead.Hip.Flexion.Velocity..deg.s.
+  6. Lead.Hip.Rotation.at.FC..deg.
 
 We'll output a general summary of how many regression models we'll assess.
 
++ _Note. RF models sample the data at random, so the V.I. values can change for each variable after each run. To ensure only those with a V.I >= 0.2 are included in our regression models below, we'll dynamically pull the variables with a V.I. value >= 0.2 from the "variable.names" object_
+
 ```{r summary of models, echo=FALSE}
-glmulti(RelSpeed..m.s. ~ 
-          Lead.Ankle.Flexion.at.FC..deg. +
-          Step.Width..m. +
-          Center.of.Mass.A.P.at.FC.Zeroed..m. +
-          Max.Lead.Hip.Flexion.Velocity..deg.s.,
+glmulti(as.formula(paste("RelSpeed..m.s. ~", 
+                         # dynamically input variable names from subset 2
+                         paste(variable.names, collapse = " + "))), 
         data = ball.speed.filtered,
         crit = bic,          # model fit criterion
         level = 1,           # 1 without interactions, 2 with interactions
@@ -244,24 +271,28 @@ glmulti(RelSpeed..m.s. ~
         confsetsize = 100)   # keep the 100 best models (confidence set)
 ```
 
-We'll now build some models to see whether we can remove any of these using a the "glmulti" package and an exhaustive algorithm. It's advised to refer to the documentation to ensure the correct/desired model parameters are set if you have more predictor variables.
+## Automated Model Selection and Model-Averaging - Genetic Algorithm
 
-```{r model with exhaustive algorithm, message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+We'll now build our models using an genetic algorithm. This will compute a number of regression models and return the best 100. This should then give us an idea as to which combination of predictors might best explain our pitched ball velocity. Whilst we're using the genetic algorithm here, it's advised to refer to the documentation to ensure the correct/desired model parameters are set.
+
+[__glmulti documentation__](https://www.rdocumentation.org/packages/glmulti/versions/1.0.8/topics/glmulti)
+
+```{r model with genetic algorithm, message=FALSE, warning=FALSE, include=FALSE, results='hide'}
 tic()
-h.model <- glmulti(RelSpeed..m.s. ~ 
-                     Lead.Ankle.Flexion.at.FC..deg. +
-                     Step.Width..m. +
-                     Center.of.Mass.A.P.at.FC.Zeroed..m. +
-                     Max.Lead.Hip.Flexion.Velocity..deg.s.,
-                  data = ball.speed.filtered,
-                  crit = bic,          # model fit criterion
-                  level = 2,           # 1 without interactions, 2 with interactions
-                  method = "h",        # exhaustive screening algorithm (better with fewer predictors)
-                  family = gaussian,
-                  fitfunction = glm,   # specify the model type (lm or glm)
-                  confsetsize = 100)   # keep the 100 best models (confidence set)
+h.model <- glmulti(as.formula(paste("RelSpeed..m.s. ~", 
+                         # dynamically input variable names from subset 2
+                         paste(variable.names, collapse = " + "))),
+                   data = ball.speed.filtered,
+                   crit = bic,         # model fit criterion
+                   level = 2,          # 1 without interactions, 2 with interactions
+                   method = "g",       # genetic screening algorithm (better with fewer predictors)
+                   family = gaussian,
+                   fitfunction = glm,  # specify the model type (lm or glm)
+                   confsetsize = 100)  # keep the 100 best models (confidence set)
 toc()
 ```
+
+## Visualise the Best 100 Models
 
 ```{r model information, echo=FALSE}
 # model results
@@ -271,13 +302,11 @@ print(h.model)
 plot(h.model) # red line indicates 2 IC units from the best model
 ```
 
-Let's extract some model information and see which variables the best models contain (in this case, the best 6 models).
+## Extracting Model Information
 
-```{r model variables, weights, and ICs, echo=FALSE}
-weightable(h.model)[1:6,] %>% # select the best 6 models
-  regulartable() %>%
-  autofit()
-```
+Let's extract some model information and see which variables the best models contain (in this case, the best 3 models).
+
+#### Model-Averaged Importance Terms
 
 ```{r variable importance across models, echo=FALSE}
 # adjust the plot margins
@@ -289,7 +318,7 @@ plot(h.model, type = "s")
 ################################################################################
 
 # open a PNG device with specified width and height
-png(filename = "Model Importance Terms.png", width = 1800, height = 1200, res = 150)
+png(filename = "Model Importance Terms.png", width = 2000, height = 1200, res = 150)
 
 # set up the layout to include extra space for the y-axis labels
 layout(matrix(1), widths = c(1.5), heights = c(1))
@@ -304,55 +333,51 @@ plot(h.model, type = "s")
 dev.off()
 ```
 
-So, it looks like __Lead.Ankle.Flexion.at.FC..deg.__ and its interaction with COM position in the AP direction at FC (__Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.__) might be most important when it comes to biomechanics explaining pitched ball velocity! There are several models that include these two terms, but since other variables are also included in them, we may want to pick a model with the fewest terms to avoid over-fitting. If we do this, the second model (+ __Step.Width..m.__) looks like it may be our best bet
+#### Best 3 Models
 
-```{r first versus second strongest models, echo=FALSE}
-first.model <- lm(RelSpeed..m.s. ~
-                    # predictors
-                    Lead.Ankle.Flexion.at.FC..deg. + 
-                    Step.Width..m. +
-                    Max.Lead.Hip.Flexion.Velocity..deg.s. +
-                    # interactions
-                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
-                  data = ball.speed.filtered)
+```{r model variables, weights, and ICs, echo=FALSE}
+weightable(h.model)[1:3,] %>% # select the best models
+  regulartable() %>%
+  autofit()
+```
 
-# summarise the final model
-print(summary(first.model))
+__Lead.Ankle.Flexion.at.FC..deg.__, __Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.__, and __Max.Lead.Hip.Flexion.Velocity..deg.s.:Step.Width..m.__ appear to be the most common terms across all computed models (included in > 80%). Incidentally, they are the sole 3 terms in our highest weighted model, so we'll summarise this to finish.
 
-second.model <- lm(RelSpeed..m.s. ~
-                    # predictors
-                    Lead.Ankle.Flexion.at.FC..deg. +
-                    Step.Width..m. +
-                    # interactions
-                    Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.,
-                    data = ball.speed.filtered)
-# summarise the final model
-print(summary(second.model))
+## Final Model
+
+```{r first versus second strongest models, echo=FALSE, include=FALSE}
+model.one <- lm(RelSpeed..m.s. ~
+                  # predictors
+                  Lead.Ankle.Flexion.at.FC..deg. + 
+                  # interactions
+                  Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg. +
+                  Max.Lead.Hip.Flexion.Velocity..deg.s.:Step.Width..m.,
+                data = ball.speed.filtered)
+
+# model.two <- lm(RelSpeed..m.s. ~
+#                   # predictors
+#                   Lead.Ankle.Flexion.at.FC..deg. + 
+#                   # interactions
+#                   Center.of.Mass.A.P.at.FC.Zeroed..m.:Lead.Ankle.Flexion.at.FC..deg.,
+#                 data = ball.speed.filtered)
+
 
 # create a table of the final model outputs, and save as a word .doc
-tab_model(first.model, second.model, 
+tab_model(model.one, 
           show.df = TRUE,
           show.se = TRUE, 
           string.se = "SE",
-          dv.labels = c("Strongest Model", "Second Strongest Model"),
+          dv.labels = c("Model 1"),
           file = "Pitch Ball Velocity Models.doc")
 ```
 
-Our strongest model accounted for ~24% of the variance in pitched ball velocity, and our second strongest model accounted for ~21%. Since these values are so close, let's run a quick model comparison between the top two to make sure we pick the right one!
+```{r}
+# summarise the strongest model
+summary(model.one)
 
-```{r model comparison}
-# model comparison
-model_performance(first.model)
-model_performance(second.model)
-
-# compare models with performance package
-compare_performance(first.model, second.model, rank = T)
-
-# compare models with flexplot package
-model.comparison(first.model, second.model)
-
-# # visualise model fit indices
-# plot(compare_performance(first.model, second.model))
+model_performance(model.one)
 ```
 
-Model fit criteria are almost identical for both models. While the AIC and BIC are lower for the model with more terms included, the Bayes Factor suggests that the difference between them is negligible. Given that our model-averaged variable importance plot showed that __Lead.Ankle.Flexion.at.FC..deg.__ and __Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.__ were by far the most common model terms across all computed models, we will select the simplest model that includes these (model 2). This model explained 26.3% of variance in pitched ball speed, compared to 27.7% (only +1.4% if we include one additional variable) for the strongest model. Given that ~70% of variance remains unexplained, it seems that variables other than those identified here may better explain pitched ball velocity in baseball.
+## Conclusion 
+
+The linear combination of __Lead.Ankle.Flexion.at.FC..deg.__, __Max.Lead.Hip.Flexion.Velocity..deg.s.:Lead.Ankle.Flexion.at.FC..deg.__, and __Max.Lead.Hip.Flexion.Velocity..deg.s.:Step.Width..m.__ accounted for ~26% of the variance in pitched ball velocity. For every 1 unit change in each term (respectively), pitched ball velocity is only expected to change minimally (< 0.1 m/s). Considering that there is still 74% of variance unexplained, we might conclude that biomechanical variables other than those identified here may do a better job of explaining pitched ball velocity in baseball.
